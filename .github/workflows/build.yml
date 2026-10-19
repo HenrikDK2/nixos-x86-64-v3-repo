@@ -1,34 +1,27 @@
+
 name: Build packages
 
 on:
   workflow_dispatch:
-
-  schedule:
-    - cron: "17 3 * * *"
-
-  push:
-    branches:
-      - main
-    paths:
-      - "flake.nix"
-      - "flake.lock"
-      - "pkgs/**"
-      - "kernels/**"
-      - "patches/**"
-      - ".github/workflows/build.yml"
+  workflow_run:
+    workflows: ["Update packages"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -38,44 +31,58 @@ jobs:
       - name: Configure Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: cachyos-v3-kernel
+          name: nixos-x86-64-v3-repo
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Update flake inputs
-        if: >-
-          github.event_name == 'schedule' ||
-          github.event_name == 'workflow_dispatch'
-        run: nix flake update nix-cachyos-kernel nixpkgs
+      - name: Check flake
+        run: nix flake check --no-build
 
-      - name: Build and publish packages
+      - name: Build and push each package
+        shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          packages=$(nix eval --json ".#packages.x86_64-linux" \
-            --apply builtins.attrNames | jq -r '.[]')
+          mapfile -t packages < <(
+            find pkgs -mindepth 1 -maxdepth 1 -type d \
+              -printf '%f\n' | sort
+          )
 
-          for pkg in $packages; do
-            echo "::group::Building $pkg"
-            nix build ".#packages.x86_64-linux.${pkg}" \
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "No package directories found in pkgs/"
+            exit 1
+          fi
+
+          failed_packages=()
+
+          for package in "${packages[@]}"; do
+            echo "::group::Building $package"
+
+            if output=$(nix build \
+              ".#${package}" \
               --no-link \
               --print-out-paths \
-              --option substituters \
-                "https://cache.nixos.org https://cachyos-v3-kernel.cachix.org" \
-              | cachix push cachyos-v3-kernel
+              --print-build-logs); then
+
+              echo "Build succeeded: $package"
+
+              if cachix push nixos-x86-64-v3-repo $output; then
+                echo "Pushed to Cachix: $package"
+              else
+                echo "::warning::Cachix push failed for $package"
+                failed_packages+=("$package (Cachix push failed)")
+              fi
+            else
+              echo "::warning::Build failed for $package"
+              failed_packages+=("$package (build failed)")
+            fi
+
             echo "::endgroup::"
           done
 
-      - name: Commit updated lock file
-        if: >-
-          github.event_name == 'schedule' ||
-          github.event_name == 'workflow_dispatch'
-        run: |
-          if ! git diff --quiet -- flake.lock; then
-            git config user.name "github-actions[bot]"
-            git config user.email \
-              "41898282+github-actions[bot]@users.noreply.github.com"
-
-            git add flake.lock
-            git commit -m "Update flake inputs"
-            git push
+          if [ "${#failed_packages[@]}" -gt 0 ]; then
+            echo "::warning::Some packages failed, but the workflow will continue successfully."
+            echo "Failed packages:"
+            printf ' - %s\n' "${failed_packages[@]}"
+          else
+            echo "All packages built and pushed successfully."
           fi

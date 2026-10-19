@@ -1,0 +1,5 @@
+{
+  "releaseApi": "https://api.github.com/repos/CachyOS/proton-cachyos/releases/latest",
+  "assetRegex": "^proton-cachyos-[0-9][A-Za-z0-9._-]*-slr-x86_64_v3\\.tar\\.xz$",
+  "versionJq": ".tag_name | sub(\"^cachyos-\"; \"\") | sub(\"-slr$\"; \"\")"
+}

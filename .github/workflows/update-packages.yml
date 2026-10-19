@@ -1,0 +1,228 @@
+name: Update packages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "pkgs/**"
+      - "patches/**"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/update-packages.yml"
+
+permissions:
+  contents: write
+
+# Never run two updaters at once (scheduled + push, etc.); they would race on `git push`.
+concurrency:
+  group: update-packages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update flake inputs
+        if: github.event_name != 'push'
+        run: nix flake update
+
+      # bash, curl, jq, find and coreutils are already on ubuntu-latest, so no
+      # `nix shell` wrapper is needed (it re-fetched them on every run).
+      - name: Update package releases
+        shell: bash
+        run: |
+          set -uo pipefail   # no -e here: one broken package must not stop the rest
+
+          updated_file="$RUNNER_TEMP/updated.txt"
+          failed_file="$RUNNER_TEMP/failed.txt"
+          : > "$updated_file"
+          : > "$failed_file"
+
+          update_one() {
+            local manifest="$1" dir output api regex version_filter
+            local auth=() release tag version matches count asset name url digest
+            local old_version="" old_url="" old_hash="" old_digest="" hash tmp
+
+            dir="$(dirname "$manifest")"
+            output="$dir/release.json"
+
+            api="$(jq -er '.releaseApi' "$manifest")"
+            regex="$(jq -er '.assetRegex' "$manifest")"
+            version_filter="$(jq -er '.versionJq' "$manifest")"
+
+            # Authenticated requests get a far higher GitHub API rate limit.
+            if [[ "$api" == https://api.github.com/* && -n "${GH_TOKEN:-}" ]]; then
+              auth=(-H "Authorization: Bearer $GH_TOKEN")
+            fi
+
+            release="$(curl -fsSL \
+              --retry 3 --retry-all-errors --max-time 60 \
+              --user-agent "nixos-package-updater" \
+              -H "Accept: application/vnd.github+json" \
+              "${auth[@]}" "$api")"
+
+            tag="$(jq -er '.tag_name' <<< "$release")"
+            version="$(jq -er "$version_filter" <<< "$release")"
+
+            if [[ -z "$version" || "$version" == "null" ]]; then
+              echo "::error::Empty version for $dir (check versionJq)"
+              return 1
+            fi
+
+            matches="$(jq -c --arg regex "$regex" \
+              '[.assets[] | select(.name | test($regex))]' <<< "$release")"
+            count="$(jq -r 'length' <<< "$matches")"
+
+            if [[ "$count" != 1 ]]; then
+              echo "::error::Expected one asset for $dir, found $count"
+              jq -r '.[].name' <<< "$matches"
+              return 1
+            fi
+
+            asset="$(jq -c '.[0]' <<< "$matches")"
+            name="$(jq -er '.name' <<< "$asset")"
+            url="$(jq -er '.browser_download_url' <<< "$asset")"
+            digest="$(jq -r '.digest // empty' <<< "$asset")"
+
+            if [[ -f "$output" ]]; then
+              old_version="$(jq -r '.version // empty' "$output")"
+              old_url="$(jq -r '.url // empty' "$output")"
+              old_hash="$(jq -r '.hash // empty' "$output")"
+              old_digest="$(jq -r '.digest // empty' "$output")"
+            fi
+
+            if [[ "$version" == "$old_version" &&
+                  "$url" == "$old_url" &&
+                  -n "$old_hash" &&
+                  ( -z "$digest" || "$digest" == "$old_digest" ) ]]; then
+              echo "Already current: $version"
+              return 0
+            fi
+
+            echo "Updating ${old_version:-<none>} -> $version ($name)"
+
+            # Prefer the digest GitHub already provides; otherwise download and hash.
+            if [[ "$digest" =~ ^sha256:([[:xdigit:]]{64})$ ]]; then
+              hash="$(nix hash convert --hash-algo sha256 --to sri "${BASH_REMATCH[1]}")"
+            else
+              hash="$(nix store prefetch-file --json "$url" | jq -er '.hash')"
+            fi
+
+            if [[ "$hash" != sha256-* ]]; then
+              echo "::error::Unexpected hash '$hash' for $dir"
+              return 1
+            fi
+
+            # Write atomically so a crash never leaves a truncated release.json.
+            tmp="$(mktemp "$dir/.release.XXXXXX")"
+            jq -n \
+              --arg version "$version" \
+              --arg tag "$tag" \
+              --arg asset "$name" \
+              --arg url "$url" \
+              --arg hash "$hash" \
+              --arg digest "$digest" \
+              '{version: $version, tag: $tag, asset: $asset,
+                url: $url, hash: $hash, digest: $digest}' > "$tmp"
+            mv "$tmp" "$output"
+
+            echo "$(basename "$dir") ${old_version:-new} -> $version" >> "$updated_file"
+          }
+
+          mapfile -d '' manifests < <(
+            find pkgs -type f -name update.json -print0 | sort -z
+          )
+
+          for manifest in "${manifests[@]}"; do
+            dir="$(dirname "$manifest")"
+            echo "::group::Updating $dir"
+            # Subshell with its own -e; deliberately not inside `if`/`||`,
+            # which would silently disable -e.
+            ( set -euo pipefail; update_one "$manifest" )
+            rc=$?
+            if (( rc != 0 )); then
+              echo "$dir" >> "$failed_file"
+            fi
+            echo "::endgroup::"
+          done
+
+          {
+            echo "### Package updates"
+            if [[ -s "$updated_file" ]]; then
+              sed 's/^/- /' "$updated_file"
+            else
+              echo "No package releases changed."
+            fi
+            if [[ -s "$failed_file" ]]; then
+              echo
+              echo "### Failed"
+              sed 's/^/- /' "$failed_file"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs even if some packages failed, so successful updates are not lost.
+      - name: Commit updates
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Pathspec magic: plain `pkgs/**/release.json` only matches one level
+          # deep in bash without globstar and misses nested packages.
+          git add -- flake.lock ':(glob)pkgs/**/release.json'
+
+          if git diff --cached --quiet; then
+            echo "No updates available."
+            exit 0
+          fi
+
+          # Separate commits keep flake.lock bumps distinguishable from releases.
+          if ! git diff --cached --quiet -- flake.lock; then
+            git commit -m "Update flake inputs" -- flake.lock
+          fi
+
+          if ! git diff --cached --quiet; then
+            body="$(cat "$RUNNER_TEMP/updated.txt" 2>/dev/null || true)"
+            git commit -m "Update package releases" -m "$body"
+          fi
+
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); rebasing and retrying."
+            git pull --rebase origin main
+          done
+
+          echo "::error::Could not push after 3 attempts"
+          exit 1
+
+      - name: Fail if any package failed to update
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          if [[ -s "$RUNNER_TEMP/failed.txt" ]]; then
+            echo "::error::Failed to update:"
+            cat "$RUNNER_TEMP/failed.txt"
+            exit 1
+          fi
