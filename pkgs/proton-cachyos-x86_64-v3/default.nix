@@ -24,10 +24,9 @@ stdenv.mkDerivation {
     mv proton-cachyos-*-x86_64_v3 proton-cachyos-x86_64-v3
 
     vdf="proton-cachyos-x86_64-v3/compatibilitytool.vdf"
-    substituteInPlace "$vdf" \
-      --replace-fail \
-        "proton-cachyos-11.0-20261014-slr-x86_64_v3" \
-        "proton-cachyos-x86_64-v3"
+    sed -i -E \
+      's/proton-cachyos-[^"]+-x86_64_v3/proton-cachyos-x86_64-v3/g' \
+      "$vdf"
   '';
 
   meta = {
