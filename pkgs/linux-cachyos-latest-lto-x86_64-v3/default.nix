@@ -1,3 +1,3 @@
 { cachyosKernels, ... }:
 
-cachyosKernels.linux-cachyos-latest-lto-x86_64-v3
+cachyosKernels.linuxPackages-cachyos-latest-lto-x86_64-v3

@@ -57,7 +57,10 @@
           map
             (name: {
               inherit name;
-              value = pkgs.${name};
+              value =
+                if name == "linux-cachyos-latest-lto-x86_64-v3"
+                then pkgs.${name}.kernel
+                else pkgs.${name};
             })
             packageNames
         );
