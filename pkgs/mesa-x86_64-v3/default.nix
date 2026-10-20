@@ -1,24 +1,21 @@
 { mesa }:
 
-mesa.overrideAttrs (old: {
-  pname = "mesa-x86_64-v3";
+mesa.overrideAttrs (old:
+  let
+    arch = "-march=x86-64-v3 -mtune=generic";
+    common = "-O3 ${arch} -fno-semantic-interposition -fno-plt";
+  in
+  {
+    pname = "mesa-x86_64-v3";
+    mesonBuildType = "release";
 
-  NIX_CFLAGS_COMPILE =
-    (old.NIX_CFLAGS_COMPILE or "") + ''
-      -O3
-      -march=x86-64-v3
-      -mtune=generic
-      -fno-lto
-    '';
+    mesonFlags = (old.mesonFlags or [ ]) ++ [
+      "-Db_ndebug=true"
+    ];
 
-  NIX_CXXFLAGS_COMPILE =
-    (old.NIX_CXXFLAGS_COMPILE or "") + ''
-      -O3
-      -march=x86-64-v3
-      -mtune=generic
-      -fno-lto
-    '';
-
-  NIX_LDFLAGS =
-    (old.NIX_LDFLAGS or "") + " -fno-lto";
-})
+    env = (old.env or { }) // {
+      NIX_CFLAGS_COMPILE = "${old.env.NIX_CFLAGS_COMPILE or ""} ${common}";
+      NIX_CXXFLAGS_COMPILE = "${old.env.NIX_CXXFLAGS_COMPILE or ""} ${common}";
+      RUSTFLAGS = "-C target-cpu=x86-64-v3 -C opt-level=3";
+    };
+  })
