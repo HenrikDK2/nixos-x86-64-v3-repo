@@ -33,7 +33,7 @@ jobs:
         with:
           name: nixos-x86-64-v3-repo
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-debug$|-source$|\.drv$)'
+          pushFilter: '(\.drv$|-source$|-debug$|-cross_tools$|-spirv2dxil$|\.(tar\.(gz|xz|bz2|zst)|tgz|zip|patch|diff)$)'
 
       - name: Check flake
         run: nix flake check --no-build
