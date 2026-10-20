@@ -8,7 +8,6 @@ on:
     branches: [main]
     paths:
       - "flake.nix"
-      - "flake.lock"
       - "pkgs/**"
       - "patches/**"
       - ".github/workflows/build.yml"
@@ -41,8 +40,8 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Runs on every trigger (schedule, manual and push).
       - name: Update flake inputs
-        if: github.event_name != 'push'
         run: nix flake update
 
       # bash, curl, jq, find and coreutils are already on ubuntu-latest, so no
