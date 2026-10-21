@@ -31,39 +31,74 @@
 
       myOverlay = final: prev:
         builtins.listToAttrs (
-          map (name:
-            let
-              path = ./pkgs + "/${name}";
-              packageFunction = import path;
-              packageArgs = builtins.functionArgs packageFunction;
-              callArgs =
-                if builtins.hasAttr "inputs" packageArgs
-                then { inherit inputs; }
-                else {};
-            in
-            {
-              inherit name;
-              value = final.callPackage path callArgs;
-            }
-          ) packageNames
+          map
+            (name:
+              let
+                path = ./pkgs + "/${name}";
+                packageFunction = import path;
+                packageArgs = builtins.functionArgs packageFunction;
+
+                callArgs =
+                  if builtins.hasAttr "inputs" packageArgs
+                  then { inherit inputs; }
+                  else {};
+              in
+              {
+                inherit name;
+                value = final.callPackage path callArgs;
+              }
+            )
+            packageNames
         );
 
       combinedOverlay = final: prev:
         (cachyosOverlay final prev)
         // (myOverlay final prev);
+
+      # Cache packages by default unless explicitly disabled.
+      cacheBinary = name:
+        let
+          package = pkgs.${name};
+        in
+        package.passthru.cache-binary or true;
+
     in
     {
       overlays.default = combinedOverlay;
 
       packages.${system} =
         builtins.listToAttrs (
-          map (name: {
-            inherit name;
-            value =
-              if name == "linux-cachyos-latest-lto-x86_64-v3"
-              then pkgs.${name}.kernel
-              else pkgs.${name};
-          }) packageNames
+          map
+            (name: {
+              inherit name;
+              value =
+                if name == "linux-cachyos-latest-lto-x86_64-v3"
+                then pkgs.${name}.kernel
+                else pkgs.${name};
+            })
+            packageNames
+        );
+
+      # Only packages enabled for Cachix publishing.
+      # Defaults to enabled when passthru.cache-binary is absent.
+      cachePackages.${system} =
+        builtins.listToAttrs (
+          builtins.filter
+            (entry: entry != null)
+            (
+              map
+                (name:
+                  if cacheBinary name then {
+                    inherit name;
+                    value =
+                      if name == "linux-cachyos-latest-lto-x86_64-v3"
+                      then pkgs.${name}.kernel
+                      else pkgs.${name};
+                  }
+                  else null
+                )
+                packageNames
+            )
         );
 
       nixosModules.default = { ... }: {

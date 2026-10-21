@@ -8,6 +8,9 @@ stdenv.mkDerivation {
   pname = "proton-cachyos-x86_64-v3";
   version = release.version;
 
+  # Don't push to cache binary
+  passthru.cache-binary = false;
+
   src = fetchurl {
     url = release.url;
     hash = release.hash;
@@ -24,6 +27,7 @@ stdenv.mkDerivation {
     mv proton-cachyos-*-x86_64_v3 proton-cachyos-x86_64-v3
 
     vdf="proton-cachyos-x86_64-v3/compatibilitytool.vdf"
+
     sed -i -E \
       's/proton-cachyos-[^"]+-x86_64_v3/proton-cachyos-x86_64-v3/g' \
       "$vdf"

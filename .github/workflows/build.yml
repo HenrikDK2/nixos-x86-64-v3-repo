@@ -1,4 +1,3 @@
-
 name: Build packages
 
 on:
@@ -9,7 +8,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -38,31 +37,41 @@ jobs:
       - name: Check flake
         run: nix flake check --no-build
 
-      - name: Build and push each package
+      - name: Build and push opted-in packages
         shell: bash
         run: |
           set -uo pipefail
 
-          mapfile -t packages < <(
-            find pkgs -mindepth 1 -maxdepth 1 -type d \
-              -printf '%f\n' | sort
-          )
+          failed_packages=()
 
-          if [ "${#packages[@]}" -eq 0 ]; then
-            echo "No package directories found in pkgs/"
+          # Read the package list selected by cachePackages in flake.nix.
+          if ! package_json="$(nix eval --json \
+            .#cachePackages.x86_64-linux \
+            --apply builtins.attrNames)"; then
+            echo "::error::Failed to evaluate cachePackages."
             exit 1
           fi
 
-          failed_packages=()
+          mapfile -t packages < <(
+            jq -r '.[]' <<< "$package_json"
+          )
+
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "No packages are enabled for Cachix publishing."
+            exit 0
+          fi
+
+          echo "Packages selected for Cachix:"
+          printf ' - %s\n' "${packages[@]}"
 
           for package in "${packages[@]}"; do
             echo "::group::Building $package"
 
-            if output=$(nix build \
-              ".#${package}" \
+            if output="$(nix build \
+              ".#cachePackages.x86_64-linux.${package}" \
               --no-link \
               --print-out-paths \
-              --print-build-logs); then
+              --print-build-logs)"; then
 
               echo "Build succeeded: $package"
 
@@ -82,8 +91,7 @@ jobs:
 
           if [ "${#failed_packages[@]}" -gt 0 ]; then
             echo "::warning::Some packages failed, but the workflow will continue successfully."
-            echo "Failed packages:"
             printf ' - %s\n' "${failed_packages[@]}"
           else
-            echo "All packages built and pushed successfully."
+            echo "All selected packages built and pushed successfully."
           fi
