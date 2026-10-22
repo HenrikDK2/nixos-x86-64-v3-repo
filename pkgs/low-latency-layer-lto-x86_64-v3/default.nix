@@ -5,7 +5,7 @@ let
   common = "-O3 ${arch}";
 in
 pkgs.stdenv.mkDerivation {
-  pname = "low-latency-layer-x86_64-v3-lto";
+  pname = "low-latency-layer-lto-x86_64-v3";
   version = inputs.low-latency-layer.shortRev or "unstable";
 
   src = inputs.low-latency-layer;
