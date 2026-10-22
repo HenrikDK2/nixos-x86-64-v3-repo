@@ -9,6 +9,11 @@
       url = "github:CachyOS/proton-cachyos/cachyos_main";
       flake = false;
     };
+
+    low-latency-layer = {
+      url = "github:Korthos-Software/low_latency_layer";
+      flake = false;
+    };
   };
 
   outputs = { self, nixpkgs, ... }@inputs:

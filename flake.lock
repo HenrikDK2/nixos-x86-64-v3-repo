@@ -34,6 +34,22 @@
         "type": "github"
       }
     },
+    "low-latency-layer": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1781781686,
+        "narHash": "sha256-bhrgpTiyxil3mlzgWWf0r7LUasHzXIUctoaEQvCKWXE=",
+        "owner": "Korthos-Software",
+        "repo": "low_latency_layer",
+        "rev": "3138b14ebd059cd540444771dd184fbf7ead2a12",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Korthos-Software",
+        "repo": "low_latency_layer",
+        "type": "github"
+      }
+    },
     "nix-cachyos-kernel": {
       "inputs": {
         "flake-compat": "flake-compat",
@@ -121,6 +137,7 @@
     },
     "root": {
       "inputs": {
+        "low-latency-layer": "low-latency-layer",
         "nix-cachyos-kernel": "nix-cachyos-kernel",
         "nixpkgs": "nixpkgs_2",
         "proton-cachyos": "proton-cachyos"
