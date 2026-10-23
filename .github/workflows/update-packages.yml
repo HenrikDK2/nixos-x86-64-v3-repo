@@ -2,8 +2,8 @@ name: Update packages
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * *"
+    schedule:
+      - cron: "0 * * * *"
   push:
     branches: [main]
     paths:
@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 # Never run two updaters at once (scheduled + push, etc.); they would race on `git push`.
 concurrency:
@@ -180,9 +181,13 @@ jobs:
 
       # Runs even if some packages failed, so successful updates are not lost.
       - name: Commit updates
+        id: commit
         if: ${{ !cancelled() }}
         shell: bash
         run: |
+          # Default to no changes; set true only after a successful push.
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -207,6 +212,7 @@ jobs:
 
           for attempt in 1 2 3; do
             if git push; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "Push rejected (attempt $attempt); rebasing and retrying."
@@ -215,6 +221,11 @@ jobs:
 
           echo "::error::Could not push after 3 attempts"
           exit 1
+
+      # Trigger build.yml only after actual changes have been pushed.
+      - name: Trigger build workflow after changes
+        if: ${{ !cancelled() && steps.commit.outputs.changed == 'true' }}
+        run: gh workflow run build.yml --ref main
 
       - name: Fail if any package failed to update
         if: ${{ !cancelled() }}
