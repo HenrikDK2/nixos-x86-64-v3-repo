@@ -57,11 +57,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1792825458,
-        "narHash": "sha256-4OhFUWfxbhGDARlbudsp2XWXdEsvyU2zRS0U2LNYV2M=",
+        "lastModified": 1792860863,
+        "narHash": "sha256-vDd0yp6Tg6Minvuqcw+ZNdEio1rOTiEO6nwvcEyAY1k=",
         "owner": "xddxdd",
         "repo": "nix-cachyos-kernel",
-        "rev": "e5f3b46dde090718a7a02d4ea1e1cc64feb2d758",
+        "rev": "932efe28d66418f0afd7c754cf755fa798c93c7f",
         "type": "github"
       },
       "original": {
