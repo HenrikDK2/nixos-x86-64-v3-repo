@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     nix-cachyos-kernel.url = "github:xddxdd/nix-cachyos-kernel";
+    lookapp.url = "github:kunkka19xx/look";
 
     proton-cachyos = {
       url = "github:CachyOS/proton-cachyos/cachyos_main";
@@ -108,6 +109,9 @@
 
       nixosModules.default = { ... }: {
         nixpkgs.overlays = [ self.overlays.default ];
+
+        # Make the lookapp Home Manager options available to every HM user.
+        home-manager.sharedModules = [ inputs.lookapp.homeModules.default ];
 
         nix.settings = {
           extra-substituters = [
