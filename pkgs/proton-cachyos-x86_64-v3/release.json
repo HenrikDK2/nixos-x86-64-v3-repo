@@ -4,5 +4,7 @@
   "asset": "proton-cachyos-11.0-20261015-slr-x86_64_v3.tar.xz",
   "url": "https://github.com/CachyOS/proton-cachyos/releases/download/cachyos-11.0-20261015-slr/proton-cachyos-11.0-20261015-slr-x86_64_v3.tar.xz",
   "hash": "sha256-TxJb19LHJNx9LQVTykLxjGcCKmAG6GKf5/eNFgqevfs=",
-  "digest": "sha256:4f125bd7d2c724dc7d2d0553ca42f18c67022a6006e8629fe7f78d160a9ebdfb"
+  "digest": "sha256:4f125bd7d2c724dc7d2d0553ca42f18c67022a6006e8629fe7f78d160a9ebdfb",
+  "assetId": "660522031",
+  "updatedAt": "2026-10-20T21:22:08Z"
 }
