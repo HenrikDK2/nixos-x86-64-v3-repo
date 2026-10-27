@@ -3,7 +3,8 @@ name: Update packages
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
+    # Off the hour: ":00" is the most congested slot and runs get delayed or dropped.
+    - cron: "21 * * * *"
   push:
     branches: [main]
     paths:
@@ -15,9 +16,9 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 # Never run two updaters at once (scheduled + push, etc.); they would race on `git push`.
+# The build job below runs inside this same run, so builds never overlap either.
 concurrency:
   group: update-packages
   cancel-in-progress: false
@@ -26,6 +27,10 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+      sha: ${{ steps.commit.outputs.sha }}
 
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,7 +65,9 @@ jobs:
           update_one() {
             local manifest="$1" dir output api regex version_filter
             local auth=() release tag version matches count asset name url digest
-            local old_version="" old_url="" old_hash="" old_digest="" hash tmp
+            local asset_id updated_at
+            local old_version="" old_url="" old_hash="" old_digest=""
+            local old_asset_id="" old_updated="" hash tmp
 
             dir="$(dirname "$manifest")"
             output="$dir/release.json"
@@ -102,16 +109,24 @@ jobs:
             name="$(jq -er '.name' <<< "$asset")"
             url="$(jq -er '.browser_download_url' <<< "$asset")"
             digest="$(jq -r '.digest // empty' <<< "$asset")"
+            # id/updated_at change when an asset is re-uploaded under the same
+            # name and URL, even when GitHub reports no digest for it.
+            asset_id="$(jq -r '.id // empty' <<< "$asset")"
+            updated_at="$(jq -r '.updated_at // empty' <<< "$asset")"
 
             if [[ -f "$output" ]]; then
               old_version="$(jq -r '.version // empty' "$output")"
               old_url="$(jq -r '.url // empty' "$output")"
               old_hash="$(jq -r '.hash // empty' "$output")"
               old_digest="$(jq -r '.digest // empty' "$output")"
+              old_asset_id="$(jq -r '.assetId // empty' "$output")"
+              old_updated="$(jq -r '.updatedAt // empty' "$output")"
             fi
 
             if [[ "$version" == "$old_version" &&
                   "$url" == "$old_url" &&
+                  "$asset_id" == "$old_asset_id" &&
+                  "$updated_at" == "$old_updated" &&
                   -n "$old_hash" &&
                   ( -z "$digest" || "$digest" == "$old_digest" ) ]]; then
               echo "Already current: $version"
@@ -141,8 +156,11 @@ jobs:
               --arg url "$url" \
               --arg hash "$hash" \
               --arg digest "$digest" \
-              '{version: $version, tag: $tag, asset: $asset,
-                url: $url, hash: $hash, digest: $digest}' > "$tmp"
+              --arg assetId "$asset_id" \
+              --arg updatedAt "$updated_at" \
+              '{version: $version, tag: $tag, asset: $asset, url: $url,
+                hash: $hash, digest: $digest,
+                assetId: $assetId, updatedAt: $updatedAt}' > "$tmp"
             mv "$tmp" "$output"
 
             echo "$(basename "$dir") ${old_version:-new} -> $version" >> "$updated_file"
@@ -185,8 +203,9 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          # Default to no changes; set true only after a successful push.
+          # Defaults: no changes, and build whatever main currently is.
           echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -202,10 +221,13 @@ jobs:
 
           # Separate commits keep flake.lock bumps distinguishable from releases.
           if ! git diff --cached --quiet -- flake.lock; then
+            echo "flake.lock changed"
             git commit -m "Update flake inputs" -- flake.lock
           fi
 
           if ! git diff --cached --quiet; then
+            echo "release.json changed:"
+            git diff --cached --name-only
             body="$(cat "$RUNNER_TEMP/updated.txt" 2>/dev/null || true)"
             git commit -m "Update package releases" -m "$body"
           fi
@@ -213,6 +235,8 @@ jobs:
           for attempt in 1 2 3; do
             if git push; then
               echo "changed=true" >> "$GITHUB_OUTPUT"
+              # Last value wins: the commit that was actually pushed.
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "Push rejected (attempt $attempt); rebasing and retrying."
@@ -221,11 +245,6 @@ jobs:
 
           echo "::error::Could not push after 3 attempts"
           exit 1
-
-      # Trigger build.yml only after actual changes have been pushed.
-      - name: Trigger build workflow after changes
-        if: ${{ !cancelled() && steps.commit.outputs.changed == 'true' }}
-        run: gh workflow run build.yml --ref main
 
       - name: Fail if any package failed to update
         if: ${{ !cancelled() }}
@@ -236,3 +255,17 @@ jobs:
             cat "$RUNNER_TEMP/failed.txt"
             exit 1
           fi
+
+  # Scheduled runs build only when the updater pushed something (flake.lock or
+  # release.json). Push and manual runs always build. `!cancelled()` lets the
+  # build run even if one package failed to update, so good updates still ship.
+  build:
+    needs: update
+    if: >-
+      ${{ !cancelled() &&
+          needs.update.outputs.sha != '' &&
+          (github.event_name != 'schedule' || needs.update.outputs.changed == 'true') }}
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.update.outputs.sha }}
+    secrets: inherit
