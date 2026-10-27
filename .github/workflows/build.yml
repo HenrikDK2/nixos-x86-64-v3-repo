@@ -19,24 +19,27 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # skipPush disables the automatic post-job push of every new store
+      # path (build tools like clang-wrapper, sources, .drv files, ...).
+      # The cache is still configured for reading and the auth token is
+      # still set up, so `cachix push` below works.
       - name: Configure Cachix
         uses: cachix/cachix-action@v17
         with:
           name: nixos-x86-64-v3-repo
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(\.drv$|-source$|-debug$|-cross_tools$|-spirv2dxil$|\.(tar\.(gz|xz|bz2|zst)|tgz|zip|patch|diff)$)'
+          skipPush: true
 
       - name: Check flake
         run: nix flake check --no-build
 
-      - name: Build and push opted-in packages
+      - name: Build packages and push their outputs
         shell: bash
         run: |
           set -uo pipefail
 
           failed_packages=()
 
-          # Read the package list selected by cachePackages in flake.nix.
           if ! package_json="$(nix eval --json \
             .#cachePackages.x86_64-linux \
             --apply builtins.attrNames)"; then
@@ -44,9 +47,7 @@ jobs:
             exit 1
           fi
 
-          mapfile -t packages < <(
-            jq -r '.[]' <<< "$package_json"
-          )
+          mapfile -t packages < <(jq -r '.[]' <<< "$package_json")
 
           if [ "${#packages[@]}" -eq 0 ]; then
             echo "No packages are enabled for Cachix publishing."
@@ -59,23 +60,29 @@ jobs:
           for package in "${packages[@]}"; do
             echo "::group::Building $package"
 
-            if output="$(nix build \
+            if outs="$(nix build \
               ".#cachePackages.x86_64-linux.${package}" \
               --no-link \
               --print-out-paths \
               --print-build-logs)"; then
-
               echo "Build succeeded: $package"
 
-              if cachix push nixos-x86-64-v3-repo $output; then
-                echo "Pushed to Cachix: $package"
-              else
-                echo "::warning::Cachix push failed for $package"
-                failed_packages+=("$package (Cachix push failed)")
+              # Skip debug outputs; everything else is the package's
+              # output(s). `cachix push` uploads each output plus its
+              # runtime closure, never build-time tools, and skips paths
+              # already on cache.nixos.org.
+              mapfile -t push_paths < <(grep -v -- '-debug$' <<< "$outs" || true)
+
+              if [ "${#push_paths[@]}" -gt 0 ]; then
+                echo "Pushing closure of:"
+                printf ' - %s\n' "${push_paths[@]}"
+
+                cachix push nixos-x86-64-v3-repo "${push_paths[@]}" \
+                  || echo "::warning::Push failed for $package"
               fi
             else
               echo "::warning::Build failed for $package"
-              failed_packages+=("$package (build failed)")
+              failed_packages+=("$package")
             fi
 
             echo "::endgroup::"
@@ -85,5 +92,5 @@ jobs:
             echo "::warning::Some packages failed, but the workflow will continue successfully."
             printf ' - %s\n' "${failed_packages[@]}"
           else
-            echo "All selected packages built and pushed successfully."
+            echo "All selected packages built successfully."
           fi
