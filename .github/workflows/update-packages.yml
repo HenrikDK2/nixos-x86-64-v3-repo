@@ -17,8 +17,8 @@ on:
 permissions:
   contents: write
 
-# Never run two updaters at once (scheduled + push, etc.); they would race on `git push`.
-# The build job below runs inside this same run, so builds never overlap either.
+# Never run two updaters at once (scheduled + push, etc.).
+# build and promote run inside this same run, so they never overlap either.
 concurrency:
   group: update-packages
   cancel-in-progress: false
@@ -198,6 +198,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Runs even if some packages failed, so successful updates are not lost.
+      # Commits locally and pushes to `staging` ONLY. main moves in the
+      # promote job, after the build has succeeded and been pushed to Cachix.
       - name: Commit updates
         id: commit
         if: ${{ !cancelled() }}
@@ -232,18 +234,14 @@ jobs:
             git commit -m "Update package releases" -m "$body"
           fi
 
-          for attempt in 1 2 3; do
-            if git push; then
-              echo "changed=true" >> "$GITHUB_OUTPUT"
-              # Last value wins: the commit that was actually pushed.
-              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "Push rejected (attempt $attempt); rebasing and retrying."
-            git pull --rebase origin main
-          done
+          # Publish to a staging branch only. Nothing here touches main.
+          if git push --force origin HEAD:refs/heads/staging; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-          echo "::error::Could not push after 3 attempts"
+          echo "::error::Could not push staging branch"
           exit 1
 
       - name: Fail if any package failed to update
@@ -256,9 +254,11 @@ jobs:
             exit 1
           fi
 
-  # Scheduled runs build only when the updater pushed something (flake.lock or
-  # release.json). Push and manual runs always build. `!cancelled()` lets the
-  # build run even if one package failed to update, so good updates still ship.
+  # Scheduled runs build only when the updater staged something. Push and
+  # manual runs always build. `!cancelled()` lets the build run even if one
+  # package failed to update, so good updates still ship.
+  # strict: true makes the build fail if ANY package fails to build or push,
+  # which blocks the promote job below.
   build:
     needs: update
     if: >-
@@ -268,4 +268,42 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ needs.update.outputs.sha }}
+      strict: true
     secrets: inherit
+
+  # Only reached when everything built and was pushed to Cachix.
+  # Fast-forwards main to the exact commit that was built.
+  promote:
+    needs: [update, build]
+    if: >-
+      ${{ !cancelled() &&
+          needs.update.outputs.changed == 'true' &&
+          needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fast-forward main to the built commit
+        shell: bash
+        env:
+          SHA: ${{ needs.update.outputs.sha }}
+        run: |
+          git fetch origin refs/heads/staging
+
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$SHA" ]]; then
+            echo "::error::staging no longer points at the built commit; skipping."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor origin/main "$SHA"; then
+            echo "::error::main moved while building; the next run will redo this on top of it."
+            exit 1
+          fi
+
+          git push origin "$SHA:refs/heads/main"

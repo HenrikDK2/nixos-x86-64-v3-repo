@@ -7,12 +7,22 @@ on:
         description: "Git ref to build (default: the triggering ref)"
         required: false
         type: string
+      strict:
+        description: "Fail the run if any package fails to build or push"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
         description: "Git ref to build"
         required: false
         type: string
+      strict:
+        description: "Fail the run if any package fails to build or push"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,7 +36,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          # Must be the commit the updater pushed, not the one that triggered it.
+          # Must be the commit the updater staged, not the one that triggered it.
           ref: ${{ inputs.ref || github.sha }}
 
       - name: Install Nix
@@ -50,6 +60,8 @@ jobs:
 
       - name: Build packages and push their outputs
         shell: bash
+        env:
+          STRICT: ${{ inputs.strict }}
         run: |
           set -uo pipefail
 
@@ -92,8 +104,10 @@ jobs:
                 echo "Pushing closure of:"
                 printf ' - %s\n' "${push_paths[@]}"
 
-                cachix push nixos-x86-64-v3-repo "${push_paths[@]}" \
-                  || echo "::warning::Push failed for $package"
+                cachix push nixos-x86-64-v3-repo "${push_paths[@]}" || {
+                  echo "::warning::Push failed for $package"
+                  failed_packages+=("$package (push)")
+                }
               fi
             else
               echo "::warning::Build failed for $package"
@@ -104,8 +118,12 @@ jobs:
           done
 
           if [ "${#failed_packages[@]}" -gt 0 ]; then
-            echo "::warning::Some packages failed, but the workflow will continue successfully."
             printf ' - %s\n' "${failed_packages[@]}"
+            if [ "$STRICT" = "true" ]; then
+              echo "::error::Not promoting: some packages failed."
+              exit 1
+            fi
+            echo "::warning::Some packages failed, but the workflow will continue successfully."
           else
             echo "All selected packages built successfully."
           fi
