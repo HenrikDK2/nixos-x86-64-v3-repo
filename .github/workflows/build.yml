@@ -58,14 +58,16 @@ jobs:
       - name: Check flake
         run: nix flake check --no-build
 
-      - name: Build packages and push their outputs
+      - name: Build packages and push missing outputs
         shell: bash
         env:
           STRICT: ${{ inputs.strict }}
+          CACHE_URL: https://nixos-x86-64-v3-repo.cachix.org
         run: |
           set -uo pipefail
 
           failed_packages=()
+          skipped_packages=()
 
           if ! package_json="$(nix eval --json \
             .#cachePackages.x86_64-linux \
@@ -85,19 +87,48 @@ jobs:
           printf ' - %s\n' "${packages[@]}"
 
           for package in "${packages[@]}"; do
-            echo "::group::Building $package"
+            echo "::group::Checking $package"
+            attr=".#cachePackages.x86_64-linux.${package}"
 
-            if outs="$(nix build \
-              ".#cachePackages.x86_64-linux.${package}" \
+            # Work out every output path without building anything.
+            # Evaluating drvPath writes the .drv to the local store.
+            if ! drv="$(nix eval --raw "${attr}.drvPath")" \
+              || ! mapfile -t all_outs < <(nix-store -q --outputs "$drv"); then
+              echo "::warning::Failed to evaluate outputs for $package"
+              failed_packages+=("$package (eval)")
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Debug outputs are never pushed, so they don't count as missing.
+            mapfile -t wanted < <(printf '%s\n' "${all_outs[@]}" | grep -v -- '-debug$' || true)
+
+            missing=()
+            for path in "${wanted[@]}"; do
+              if ! nix path-info --store "$CACHE_URL" "$path" >/dev/null 2>&1; then
+                missing+=("$path")
+              fi
+            done
+
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "All outputs already on cache; skipping build and push: $package"
+              skipped_packages+=("$package")
+              echo "::endgroup::"
+              continue
+            fi
+
+            echo "Missing from cache:"
+            printf ' - %s\n' "${missing[@]}"
+
+            # ^* selects ALL outputs (out, dev, modules, ...). Without it,
+            # only the default outputs are built and multi-output packages
+            # like the kernel would be cached incompletely.
+            if outs="$(nix build "${attr}^*" \
               --no-link \
               --print-out-paths \
               --print-build-logs)"; then
               echo "Build succeeded: $package"
 
-              # Skip debug outputs; everything else is the package's
-              # output(s). `cachix push` uploads each output plus its
-              # runtime closure, never build-time tools, and skips paths
-              # already on cache.nixos.org.
               mapfile -t push_paths < <(grep -v -- '-debug$' <<< "$outs" || true)
 
               if [ "${#push_paths[@]}" -gt 0 ]; then
@@ -117,7 +148,13 @@ jobs:
             echo "::endgroup::"
           done
 
+          if [ "${#skipped_packages[@]}" -gt 0 ]; then
+            echo "Already cached (skipped):"
+            printf ' - %s\n' "${skipped_packages[@]}"
+          fi
+
           if [ "${#failed_packages[@]}" -gt 0 ]; then
+            echo "Failed:"
             printf ' - %s\n' "${failed_packages[@]}"
             if [ "$STRICT" = "true" ]; then
               echo "::error::Not promoting: some packages failed."
@@ -125,5 +162,5 @@ jobs:
             fi
             echo "::warning::Some packages failed, but the workflow will continue successfully."
           else
-            echo "All selected packages built successfully."
+            echo "All selected packages are cached."
           fi
